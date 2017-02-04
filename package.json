@@ -1,0 +1,21 @@
+{
+  "name": "soundtouch4electron",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node_modules/.bin/electron .",
+    "check": "node_modules/.bin/electron check.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "edge": "^6.5.1",
+    "electron-edge": "^6.5.4",
+    "electron-prebuilt": "^1.4.4"
+  },
+  "devDependencies": {
+    "electron-rebuild": "^1.5.7"
+  }
+}
