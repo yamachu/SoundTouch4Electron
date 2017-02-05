@@ -11,6 +11,7 @@ public class WorldParameters
 {
     public double frame_period;
     public int fs;
+    public int nbit;
 
     public double[] original_f0;
     public double[] f0;
@@ -20,6 +21,12 @@ public class WorldParameters
     public double[,] spectrogram;
     public double[,] aperiodicity;
     public int fft_size;
+
+    public int x_length;
+    public double[] x;
+    
+    public int y_length;
+    public double[] y;
 }
 
 public class WorldSample
@@ -123,115 +130,174 @@ public class WorldSample
 public class Startup
 {
     public async Task<object> Invoke(object param)
-    {
-        var apis = Manager.GetWorldCoreAPI();
-        var tools = Manager.GetWorldToolsAPI();
-        var world = new WorldSample();
-        
+    {        
         return new {
-            initFromFile = (Func<object,Task<object>>)(
-                async (inFileName) => 
-                {
-                    var x_length = tools.GetAudioLength(inFileName as string);
-                    if (x_length <= 0) {
-                        // File is not exist or file format is not mono?
-                        return null;
-                    }
+            // when faild initialize,  return null
+            // succeeded, return file instance
+            initFromFile = (Func<object,Task<object>>)(async (inFileName) => 
+            {
+                var fileInstance = new WorldAPIWrapper();
+                var isValid = await fileInstance.InitializeFromFile(inFileName as string);
 
-                    double[] x = new double[x_length];
-                    int fs, nbit;
-
-                    tools.WavRead(inFileName as string, out fs, out nbit, x);
-
-                    var parameters = new WorldParameters();
-                    parameters.fs = fs;
-                    parameters.frame_period = 5.0;
-
-                    double[] y = null;
-
-                    return new {
-                        getFileInfo = (Func<object,Task<object>>)(
-                            async (_) =>
-                            {
-                                var result = new {
-                                    fs = fs,
-                                    bit = nbit,
-                                    sample = x_length,
-                                    length = (double)x_length / fs
-                                };
-
-                                return result;
-                            }
-                        ),
-                        analysis = (Func<object,Task<object>>)(
-                            async (_) =>
-                            {
-                                world.F0EstimationHarvest(x, x_length, parameters);
-                                world.SpectralEnvelopeEstimation(x, x_length, parameters);
-                                world.AperiodicityEstimation(x, x_length, parameters);
-
-                                return true;
-                            }
-                        ),
-                        synthesis = (Func<object,Task<object>>)(
-                            async (_) =>
-                            {
-                                var is_initiaize = false;
-                                int y_length = (int)((parameters.f0_length - 1) * parameters.frame_period / 1000.0 * fs) + 1;
-
-                                if (y == null) {
-                                    y = new double[y_length];
-                                    is_initiaize = true;
-                                }
-                                
-                                System.Console.WriteLine(is_initiaize);
-                                world.WaveformSynthesis(parameters, fs, y_length, y, is_initiaize);
-                                
-                                return true;
-                            }
-                        ),
-                        saveToFile = (Func<object,Task<object>>)(
-                            async (data) =>
-                            {   
-                                if (y == null) {
-                                    return false;
-                                }
-
-                                var outFileName = ((IDictionary<string,object>)data)["fileName"] as string;
-
-                                int y_length = (int)((parameters.f0_length - 1) * parameters.frame_period / 1000.0 * fs) + 1;
-                                
-                                tools.WavWrite(y, y_length, fs, nbit, outFileName);
-
-                                return true;
-                            }
-                        ),
-                        updateF0Points = (Func<object,Task<object>>)(
-                            async (data) =>
-                            {   
-                                foreach (var kv in (IDictionary<string, object>)data)
-                                {
-                                    parameters.f0[Int32.Parse(kv.Key)] = Convert.ToDouble(kv.Value);
-                                }
-
-                                return true;
-                            }
-                        ),
-                        getF0Length = (Func<object,Task<object>>)(
-                            async (_) =>
-                            {
-                                return parameters.f0_length;
-                            }
-                        ),
-                        getF0 = (Func<object,Task<object>>)(
-                            async (_) =>
-                            {
-                                return parameters.f0;
-                            }
-                        )
-                    };
+                if (!isValid) {
+                    return null;
                 }
-            )
+
+                return new {
+                    // return file information dictionary
+                    getFileInfo = (Func<object,Task<object>>)(async (_) =>
+                    {
+                        return await fileInstance.GetFileInfo();
+                    }),
+                    // always return true
+                    analysis = (Func<object,Task<object>>)(async (_) =>
+                    {
+                        return await fileInstance.Analysis();
+                    }),
+                    // always return true
+                    synthesis = (Func<object,Task<object>>)(async (_) =>
+                    {        
+                        return await fileInstance.Synthesis();
+                    }),
+                    // parameter: fileName -> save file name
+                    //            overwrite -> if this parameter is false, append current time to file　name
+                    // return saved file name when succeeded, else blank string
+                    saveToFile = (Func<object,Task<object>>)(async (outFileParameters) =>
+                    {   
+                        var _param = (IDictionary<string,object>)outFileParameters;
+
+                        object dictvalue;
+                        
+                        string outFileName = "";
+                        bool do_overwrite = true;
+
+                        if (!_param.TryGetValue("fileName", out dictvalue)) {
+                            return "";
+                        }
+                        outFileName = (string)dictvalue;
+                        
+                        if (_param.TryGetValue("overwrite", out dictvalue)) {
+                            do_overwrite = (bool)dictvalue;
+                        }
+                        
+                        return await fileInstance.SaveToFile(outFileName, do_overwrite);
+                    }),
+                    // parameter: f0WithIdx -> dictionary which key is index, value is new f0
+                    updateF0Points = (Func<object,Task<object>>)(async (f0WithIdx) =>
+                    {   
+                        return await fileInstance.UpdateF0Points((IDictionary<string, object>)f0WithIdx);
+                    }),
+                    // return f0 array
+                    getF0 = (Func<object,Task<object>>)(async (_) =>
+                    {
+                        return await fileInstance.GetF0();
+                    })
+                };
+            })
         };
+    }
+}
+
+public class WorldAPIWrapper
+{
+    private ICore Apis;
+    private ITools Tools;
+    private WorldSample World;
+    private WorldParameters Parameters;
+
+    public WorldAPIWrapper()
+    {
+        Apis = Manager.GetWorldCoreAPI();
+        Tools = Manager.GetWorldToolsAPI();
+        World = new WorldSample();
+        Parameters = new WorldParameters();
+    }
+
+    async public Task<bool> InitializeFromFile(string fileName)
+    {
+        var x_length = Tools.GetAudioLength(fileName);
+        if (x_length <= 0) {
+            // File is not exist or file format is not mono
+            return false;
+        }
+
+        Parameters.x = new double[x_length];
+        
+        Tools.WavRead(fileName, out Parameters.fs, out Parameters.nbit, Parameters.x);
+
+        Parameters.x_length = x_length;
+        Parameters.frame_period = 5.0;
+
+        return true;
+    }
+
+    async public Task<object> GetFileInfo()
+    {
+        return new {
+            fs = Parameters.fs,
+            bit = Parameters.nbit ,
+            sample = Parameters.x_length,
+            length = (double)(Parameters.x_length / Parameters.fs)
+        };
+    }
+
+    async public Task<bool> Analysis()
+    {
+        World.F0EstimationHarvest(Parameters.x, Parameters.x_length, Parameters);
+        World.SpectralEnvelopeEstimation(Parameters.x, Parameters.x_length, Parameters);
+        World.AperiodicityEstimation(Parameters.x, Parameters.x_length, Parameters);
+
+        return true;
+    }
+
+    async public Task<bool> Synthesis()
+    {
+        var y_length = (int)((Parameters.f0_length - 1) * Parameters.frame_period / 1000.0 * Parameters.fs) + 1;
+        var is_initiaize = false;
+
+        if (Parameters.y == null) {
+            Parameters.y = new double[y_length];
+            Parameters.y_length = y_length;
+            is_initiaize = true;
+        }
+        
+        World.WaveformSynthesis(Parameters, Parameters.fs, y_length, Parameters.y, is_initiaize);
+
+        return true;
+    }
+
+    async public Task<string> SaveToFile(string fileName, bool overwrite = true)
+    {
+        if (Parameters.y == null) {
+            return "";
+        }
+
+        var savedFileName = fileName;
+
+        if (!overwrite && System.IO.File.Exists(fileName)) {
+            var dir = System.IO.Path.GetDirectoryName(fileName);
+            var base_file_name = System.IO.Path.GetFileNameWithoutExtension(fileName);
+            var extension = System.IO.Path.GetExtension(fileName);
+            var now = System.DateTime.Now.ToString("_yyyyMMddhhmmss");
+            savedFileName = dir + System.IO.Path.DirectorySeparatorChar + base_file_name + now + extension;
+        }
+        
+        Tools.WavWrite(Parameters.y, Parameters.y_length, Parameters.fs, Parameters.nbit, savedFileName);
+
+        return savedFileName;
+    }
+
+    async public Task<bool> UpdateF0Points(IDictionary<string, object> data)
+    {
+        foreach (var kv in data)
+        {
+            Parameters.f0[Int32.Parse(kv.Key)] = Convert.ToDouble(kv.Value);
+        }
+        return true;
+    }
+
+    async public Task<object> GetF0()
+    {
+        return Parameters.f0;
     }
 }
