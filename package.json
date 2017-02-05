@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node_modules/.bin/electron .",
-    "check": "node_modules/.bin/electron check.js"
+    "check": "node_modules/.bin/electron check.js",
+    "sample": "node_modules/.bin/electron sample.js"
   },
   "author": "",
   "license": "ISC",
