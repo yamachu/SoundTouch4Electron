@@ -191,6 +191,14 @@ public class Startup
                     getF0 = (Func<object,Task<object>>)(async (_) =>
                     {
                         return await fileInstance.GetF0();
+                    }),
+                    undo = (Func<object,Task<object>>)(async (_) =>
+                    {
+                        return await fileInstance.UndoF0Points();
+                    }),
+                    redo = (Func<object,Task<object>>)(async (_) =>
+                    {
+                        return await fileInstance.RedoF0Points();
                     })
                 };
             })
@@ -205,12 +213,25 @@ public class WorldAPIWrapper
     private WorldSample World;
     private WorldParameters Parameters;
 
+    private LinkedList<IDictionary<string, object>> History;
+    private int HistoryLimit = 5;
+    private int HistoryCurrentIndex;
+
     public WorldAPIWrapper()
     {
         Apis = Manager.GetWorldCoreAPI();
         Tools = Manager.GetWorldToolsAPI();
         World = new WorldSample();
         Parameters = new WorldParameters();
+        History = new LinkedList<IDictionary<string, object>>();
+        HistoryCurrentIndex = 0;
+    }
+
+    async public Task<bool> SetHistoryLimit(int limit)
+    {
+        HistoryLimit = limit;
+
+        return true;
     }
 
     async public Task<bool> InitializeFromFile(string fileName)
@@ -247,6 +268,14 @@ public class WorldAPIWrapper
         World.SpectralEnvelopeEstimation(Parameters.x, Parameters.x_length, Parameters);
         World.AperiodicityEstimation(Parameters.x, Parameters.x_length, Parameters);
 
+        History.Clear();
+
+        var base_f0 = Parameters.f0
+            .Select((v, idx) => new { idx, v})
+            .ToDictionary(n => n.idx.ToString(), n => (object)(new []{-1, n.v}));
+
+        History.AddFirst(base_f0);
+        HistoryCurrentIndex = History.Count;
         return true;
     }
 
@@ -289,15 +318,67 @@ public class WorldAPIWrapper
 
     async public Task<bool> UpdateF0Points(IDictionary<string, object> data)
     {
-        foreach (var kv in data)
-        {
-            Parameters.f0[Int32.Parse(kv.Key)] = Convert.ToDouble(kv.Value);
-        }
+        AppendHistoryWithLimit(data, HistoryCurrentIndex != History.Count);
+        ApplyNewF0Points(data);
+
         return true;
     }
 
     async public Task<object> GetF0()
     {
         return Parameters.f0;
+    }
+
+    async public Task<bool> UndoF0Points()
+    {
+        if (HistoryCurrentIndex == 1) {
+            return false;
+        }
+
+        var undo_points = History.ElementAt(HistoryCurrentIndex - 1);
+        HistoryCurrentIndex--;
+
+        ApplyNewF0Points(undo_points, true);
+        return true;
+    }
+
+    async public Task<bool> RedoF0Points()
+    {
+        if (History.Count == HistoryCurrentIndex) {
+            return false;
+        }
+
+        var redo_points = History.ElementAt(HistoryCurrentIndex);
+        HistoryCurrentIndex++;
+
+        ApplyNewF0Points(redo_points);
+        return true;
+    }
+
+    private void AppendHistoryWithLimit(IDictionary<string, object> data, bool isInsertion = false)
+    {
+        if (isInsertion) {
+            var times = History.Count - HistoryCurrentIndex;
+            for (var i = 0; i < times; i++) {
+                History.RemoveLast();
+            }
+        }
+
+        if (History.Count >= HistoryLimit) {
+            System.Console.WriteLine("Limit exceed, remove first node");
+            History.RemoveFirst();
+        }
+        History.AddLast(data);
+
+        HistoryCurrentIndex = History.Count;
+    }
+
+    private void ApplyNewF0Points(IDictionary<string, object> newData, bool isUndo = false)
+    {
+        foreach (var kv in newData)
+        {
+            Parameters.f0[Int32.Parse(kv.Key)]
+                = Convert.ToDouble(((object[])kv.Value)[isUndo ? 0: 1]);
+        }
     }
 }
